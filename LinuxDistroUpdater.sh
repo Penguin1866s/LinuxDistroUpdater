@@ -6,6 +6,13 @@
 bold=$(tput bold)
 reset=$(tput sgr0)
 
+#Options:
+#opt-01: autoconfirmation
+if [ "$1" == "-y" ]; then
+    AUTO_CONFIRM="y"
+else
+    AUTO_CONFIRM="n"
+fi
 
 if [ "$(whoami)" == "root" ]; then
     echo "This script is execute by the user ${bold}$(whoami)${reset}"
@@ -27,7 +34,12 @@ if [ "$SO" == "Ubuntu" ] || [ "$SO" == "linuxmint" ]; then
     echo "End updating."
 
     echo "You want to auto-remove the outdated packages?(y/n)"
-    read CONFIRMATION
+    if [ $AUTO_CONFIRM == "n" ]; then
+        read CONFIRMATION
+    elif [ $AUTO_CONFIRM == "y" ]; then
+        CONFIRMATION="y"
+    fi
+
     if [[ $CONFIRMATION == "y" || $COFIRMATION == "yes" ]]; then
         echo ''
         apt autoremove -y
@@ -50,7 +62,12 @@ if [ "$SO" == "Ubuntu" ] || [ "$SO" == "linuxmint" ]; then
 #    echo "End updating."
 
 #    echo "You want to auto-remove the outdated packages?(y/n)"
-#    read CONFIRMATION
+#    if [ $AUTO_CONFIRM == "n" ]; then
+#        read CONFIRMATION
+#    elif [ $AUTO_CONFIRM == "y" ]; then
+#        CONFIRMATION="y"
+#    fi
+
 #    if [[ $CONFIRMATION == "y" || $COFIRMATION == "yes" ]]; then
 #        echo ''
 #        dnf autoremove -y
@@ -72,7 +89,12 @@ if [ "$SO" == "Ubuntu" ] || [ "$SO" == "linuxmint" ]; then
 #    echo "End updating."
 
 #    echo "You want to auto-remove the outdated packages?(y/n)"
-#    read CONFIRMATION
+#    if [ $AUTO_CONFIRM == "n" ]; then
+#        read CONFIRMATION
+#    elif [ $AUTO_CONFIRM == "y" ]; then
+#        CONFIRMATION="y"
+#    fi
+
 #    if [[ $CONFIRMATION == "y" || $COFIRMATION == "yes" ]]; then
 #        echo ''
 #        xbps-remove -Oo    ---(pending for tested)
@@ -92,7 +114,12 @@ if [ "$SO" == "Ubuntu" ] || [ "$SO" == "linuxmint" ]; then
 #    echo "End updating."
 
 #    echo "You want to auto-remove the outdated packages?(y/n)"
-#    read CONFIRMATION
+#    if [ $AUTO_CONFIRM == "n" ]; then
+#        read CONFIRMATION
+#    elif [ $AUTO_CONFIRM == "y" ]; then
+#        CONFIRMATION="y"
+#    fi
+
 #    if [[ $CONFIRMATION == "y" || $COFIRMATION == "yes" ]]; then
 #        zypper clean --all    ---(pending for tested)
 #    echo "End auto-remove autdated packages."
@@ -101,7 +128,12 @@ if [ "$SO" == "Ubuntu" ] || [ "$SO" == "linuxmint" ]; then
 #        exit
 #    else
 #        echo "Please repeat your awnser, put ${bold}(y/n)${reset}"
-#    read CONFIRMATION
+#    if [ $AUTO_CONFIRM == "n" ]; then
+#        read CONFIRMATION
+#    elif [ $AUTO_CONFIRM == "y" ]; then
+#        CONFIRMATION="y"
+#    fi
+
 #    fi
 
 
@@ -112,7 +144,12 @@ if [ "$SO" == "Ubuntu" ] || [ "$SO" == "linuxmint" ]; then
 #    echo "End updating."
 #
 #    echo "You want to auto-remove the outdated packages?(y/n)"
-#    read CONFIRMATION
+#    if [ $AUTO_CONFIRM == "n" ]; then
+#        read CONFIRMATION
+#    elif [ $AUTO_CONFIRM == "y" ]; then
+#        CONFIRMATION="y"
+#    fi
+
 #    if [[ $CONFIRMATION == "y" || $COFIRMATION == "yes" ]]; then
 #        pacman clean --all    ---(pending for tested)
 #    echo "End auto-remove autdated packages."
@@ -121,7 +158,12 @@ if [ "$SO" == "Ubuntu" ] || [ "$SO" == "linuxmint" ]; then
 #        exit
 #    else
 #        echo "Please repeat your awnser, put ${bold}(y/n)${reset}"
-#    read CONFIRMATION
+#    if [ $AUTO_CONFIRM == "n" ]; then
+#        read CONFIRMATION
+#    elif [ $AUTO_CONFIRM == "y" ]; then
+#        CONFIRMATION="y"
+#    fi
+
 #    fi
 
 
