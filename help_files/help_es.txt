@@ -1,0 +1,29 @@
+Actualizador Universal de Distribuciones Linux v${VERSION}
+
+USO:
+    sudo ./${SCRIPT_NAME} [OPCIONES]
+
+OPCIONES:
+    -h, --help              Muestra esta ayuda.
+    -v, --version           Muestra la versión.
+    -l, --list-managers     Muestra los gestores de paquetes soportados.
+    -i, --install           Instala LinuxDistroUpdater localmente y habilita el autocompletado de argumentos.
+    -s, --snapshot          Crea punto de restauración antes de actualizar (requiere Timeshift).
+    -b, --basic             Actualización básica (update + upgrade).
+    -f, --full              Actualización completa (update + full-upgrade + repetir).
+    -c, --cleanup           Ejecuta limpieza de paquetes innecesarios.
+    -a, --all               Ejecuta todo: snapshot + full update + cleanup.
+    -p, --package-manager   Fuerza el uso de un gestor específico (apt, dnf, pacman, zypper, xbps).
+
+EJEMPLOS:
+    # Actualización completa con todo
+    sudo ./$(basename "$0") --all
+
+    # Forzar uso de apt para actualización completa
+    sudo ./$(basename "$0") --full --package-manager apt
+
+NOTAS:
+    - El script detecta automáticamente el gestor de paquetes
+    - Los logs se guardan en: ${LOG_FILE}
+    - La opción --snapshot usa Timeshift
+

@@ -1,0 +1,15 @@
+_LinuxDistroUpdater() {
+    #Declare local variables required by _init_completion
+    local cur prev words cword
+
+    #The || return is for if the _init_completion fails, the return will stop the function
+    # The _init_completion it's a bash function that is what passes the value of for example the>
+    _init_completion || return
+
+    #The command of "compgen" it compares the list of parameters with the current word written b>
+    #The name of "COMPREPLY" is an special bash variable, that bash review every time the user t>
+    COMPREPLY=( $(compgen -W "$(_parse_help "$1")" -- "$cur") )
+}
+
+# We make that the command of LinuxDistroUpdater it autocomplete with the _LinuxDistroUpdater fu>
+complete -F _LinuxDistroUpdater LinuxDistroUpdater

@@ -1,0 +1,602 @@
+#!/bin/bash
+#==============================================================================
+# GLOBAL VARIABLES
+#==============================================================================
+SCRIPT_NAME="LinuxDistroUpdater"
+#SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)" # The directory of this file
+SCRIPT_DIR="$(dirname "$(readlink -f "$0")")" #This change is because with this form, will detect the real script dir, even if it is running from a copy linked with a symbolic link, its real directory beingn /opt
+LOG_FILE="/var/log/linux_distro_updater.log"
+VERSION="2.0.0"
+export VERSION #export the variable to makeit a global variable and to be accesible by the help files.
+export LOG_FILE
+export SCRIPT_NAME
+
+# External modular files
+SNAPSHOT_TIMESHIFT_SCRIPT="${SCRIPT_DIR}/snapshot_timeshift_script.sh"
+
+# Default options
+DO_SNAPSHOT=false
+DO_BASIC_UPDATE=false
+DO_FULL_UPDATE=false
+DO_CLEANUP=false
+INSTALL=false
+FORCE_PKG_MANAGER=""
+
+# List of supported package managers
+list_package_manager_supported=( "apt" "dnf" "pacman" "zypper" "xbps" )
+
+# List of commands by package manager
+full_update_commands_apt=( "apt update" "apt upgrade -y" "for pkg in $(apt list --upgradable 2>/dev/null | awk -F/ '/\// {print $1}'); do sudo apt install "$pkg" -y; done" )
+# The "for pkg in $(apt list --upgradable 2>/dev/null | awk -F/ '/\// {print $1}'); do sudo apt install "$pkg" -y; done" command, is by in that case, that you alredy have full updated, all, but packages ramain unupdated, that loop, is for updated manually.
+update_commands_apt=( "apt update" "apt upgrade -y" )
+clean_commands_apt=( "apt autoremove --purge -y" "apt autoclean -y" )
+
+full_update_commands_dnf=( "dnf update -y" "dnf upgrade --refresh -y" )
+update_commands_dnf=( "dnf makecache --refresh" "dnf update -y" )
+clean_commands_dnf=( "dnf autoremove -y" "dnf clean all" )
+
+full_update_commands_pacman=( "pacman -Syu --noconfirm" )
+update_commands_pacman=( "pacman -Syu --noconfirm" ) # "pacman -Qu" list packages with newer versions, in this case is redundant
+clean_commands_pacman=( "pacman -Sc --noconfirm" "pacman -Rns \$(pacman -Qdtq) --noconfirm" )
+
+full_update_commands_zypper=( "zypper update -y" "zypper dup -y")
+update_commands_zypper=( "zypper update -y" )
+clean_commands_zypper=( "zypper clean --all" )
+
+full_update_commands_xbps=( "xbps-install -Syu" )
+update_commands_xbps=( "xbps-install -Su" )
+clean_commands_xbps=( "xbps-remove -Oo" )
+
+
+#==============================================================================
+# AUXILIAR FUNCTIONS
+#==============================================================================
+
+# It's a function and not a varibale because during the execution the time it's change
+get_timestamp() {
+    TIMESTAMP=$(date +"%Y-%m-%d %H:%M:%S")
+}
+
+#Function to print messages whit time firts and to logit in the log file
+echo_log_msg() {
+    get_timestamp # Obtain the actual timestamp, during the call of this function
+    echo -e "[$TIMESTAMP] $1"
+    echo -e "[$TIMESTAMP] $1" >> "$LOG_FILE"
+}
+export -f echo_log_msg
+
+# Function to delete and keep the last 500 lines if the log file exceeds the 800 lines
+rotate_log() {
+    if [ -f "$LOG_FILE" ]; then
+        local line_count=$(wc -l < "$LOG_FILE")
+        if [ "$line_count" -gt 800 ]; then
+            tail -n 500 "$LOG_FILE" > "${LOG_FILE}.tmp"
+            mv "${LOG_FILE}.tmp" "$LOG_FILE"
+            echo_log_msg "Log rotated - keeping the last 500 lines."
+        fi
+    fi
+}
+
+check_root() {
+    if [ "$EUID" -ne 0 ]; then
+        echo "ERROR: Please, run this script as root."
+        exit 1
+    fi
+}
+
+# Function to show help, it show's the help by your system language
+show_help() {
+    lang_sys="${LANG:0:2}" #LANG(language) 0(where start to cut) 2(how many characters show), the value is something like "es" or "en"
+    help_file=""
+    if [ "$lang_sys" == "es" ]; then
+        help_file="${SCRIPT_DIR}/help_files/help_es.txt"
+    else
+    # The default help language, english.
+        help_file="${SCRIPT_DIR}/help_files/help_en.txt"
+    fi
+    envsubst < "$help_file" # envsubst it show the content of the file
+}
+
+show_supported_package_managers() {
+    echo "Supported package managers:"
+    for pkg_mng in "${list_package_manager_supported[@]}"
+    do
+        echo -e "    -\033[1m${pkg_mng}\033[0m" # The "\033[1m" and "\033[0m" are escape characters to activate and deactivate the bold text
+    done
+}
+
+#==============================================================================
+# DETECTION OF PACKAGE MANAGER
+#==============================================================================
+
+#by detect if that comand exist
+detect_main_package_manager() {
+    PKG_MANAGER=""
+    # The "-n" heck if that variable is not null or void# the "-n" heck if that variable is not null or void
+    if [ -n "$FORCE_PKG_MANAGER" ]; then
+        # Verify if the force package manager exist or not
+        if ( command -v "$FORCE_PKG_MANAGER" &> /dev/null); then
+            PKG_MANAGER="$FORCE_PKG_MANAGER"
+            echo_log_msg "Using package manager forced: $PKG_MANAGER"
+        else
+            echo_log_msg "ERROR: Package manager forced '$FORCE_PKG_MANAGER' not founded 404."
+            exit 1
+        fi
+    else
+        # Detection automated
+        if ( command -v apt &> /dev/null ) || ( command -v apt-get &> /dev/null ); then
+            PKG_MANAGER="apt"
+        elif ( command -v dnf &> /dev/null ); then
+            PKG_MANAGER="dnf"
+        elif ( command -v pacman &> /dev/null ); then
+            PKG_MANAGER="pacman"
+        elif ( command -v zypper &> /dev/null ); then
+            PKG_MANAGER="zypper"
+        elif ( command -v xbps &> /dev/null ); then
+            PKG_MANAGER="xbps"
+        else
+            echo_log_msg "ERROR: No supported package manager was detected."
+            exit 1
+        fi
+        echo_log_msg "Package manager detected: $PKG_MANAGER"
+    fi
+    echo "$PKG_MANAGER" #to use this value in the exports uses
+}
+#export the function to use it in snapshoft_timeshift_script.sh
+export -f detect_main_package_manager
+
+#==============================================================================
+# FUNCTION INSTALL
+#==============================================================================
+
+install_linuxDistroUpdater() {
+    echo_log_msg "==================================="
+    echo_log_msg "   Starting Installation Process"
+    echo_log_msg "==================================="
+    
+    #Verify that is not already installed
+    if [ -d "/opt/LinuxDistroUpdater" ]; then
+        echo_log_msg "WARNING: LinuxDistroUpdater is already installed in /opt"
+        read -p "Do you want to reinstall/update? (y/n): " -n 1 -r
+        echo -e "\n${REPLY}"
+        if [[ ! "$REPLY" =~ ^[YySs]$ ]]; then
+            echo_log_msg "Installation cancelled by user."
+            exit 0
+        fi
+        echo_log_msg "Proceeding with reinstallation.."
+    fi
+    
+    #Step 1: copy all to /opt
+    echo_log_msg "Step 1/3: Copying files to /opt/LinuxDistroUpdater.."
+    if sudo cp -r $SCRIPT_DIR /opt/LinuxDistroUpdater 2>&1 | tee -a "$LOG_FILE"; then
+        echo_log_msg "Files copied successfully to /opt/LinuxDistroUpdater"
+    else
+        echo_log_msg "ERROR: Failed to copy files to /opt"
+        exit 1
+    fi
+    
+    #Step 2: Create simbolic link in /usr/local/bin
+    echo_log_msg "Step 2/3: Creating symbolic link in /usr/local/bin.."
+    #delete the existing simbolic link
+    if [ -L "/usr/local/bin/LinuxDistroUpdater" ]; then
+        echo_log_msg "Removing old symbolic link.."
+        sudo rm /usr/local/bin/LinuxDistroUpdater
+    fi
+    
+    if sudo ln -s /opt/LinuxDistroUpdater/LinuxDistroUpdater /usr/local/bin 2>&1 | tee -a "$LOG_FILE"; then
+        echo_log_msg "Symbolic link created: /usr/local/bin/LinuxDistroUpdater"
+    else
+        echo_log_msg "ERROR: Failed to create symbolic link"
+        exit 1
+    fi
+    
+    #Step 3: Install bash completion file
+    echo_log_msg "Step 3/3: Installing bash completion.."
+    if [ -f "$SCRIPT_DIR/LinuxDistroUpdater.bash_completion" ]; then
+        #Detect if it have the modern completion directory, if not, check if it detects the old clasic directory
+        if [ -d /usr/share/bash-completion/completions ]; then
+            COMPLETION_DIR="/usr/share/bash-completion/completions"
+        elif [ -d /etc/bash_completion.d ]; then
+            COMPLETION_DIR="/etc/bash_completion.d"
+        else
+            echo_log_msg "ERROR: Bash completion directory not found"
+            exit 1
+        fi
+        
+        if sudo cp $SCRIPT_DIR/LinuxDistroUpdater.bash_completion $COMPLETION_DIR/LinuxDistroUpdater 2>&1 | tee -a "$LOG_FILE"; then
+            echo_log_msg "Bash completion installed: $COMPLETION_DIR/LinuxDistroUpdater"
+        else
+            echo_log_msg "ERROR: Failed to install bash completion"
+            exit 1
+        fi
+        
+        echo_log_msg ""
+        echo_log_msg "Verifying installation.."
+        if command -v LinuxDistroUpdater &> /dev/null; then
+            echo_log_msg "Command 'LinuxDistroUpdater' is available in PATH"
+        else
+            echo_log_msg "WARNING: Command not found in PATH (may need to restart terminal)"
+        fi
+    else
+        echo_log_msg "ERROR: Bash completion file not found"
+        exit 1
+    fi
+
+}
+
+#==============================================================================
+# FUNCTIONS UPDATE
+#==============================================================================
+
+execute_commands() {
+    array_commands=$1
+    description_command=$2
+
+    # using nameref, the local -n transform a simply string into a reference of a varibale of the script(in this case are functions in the script), whithout using it, it would interpreted the array_commands as a simple string
+    local -n funcional_array_commands=$array_commands
+
+    echo_log_msg "=== Starting: $description_command ==="
+    # this loop is for iterate over the commands
+    for command in "${funcional_array_commands[@]}"
+    do
+        echo_log_msg "Executing: $command"
+
+        # The eval is, if you execute "ls ." in the script, don't run, because it search a comand "ls .", but punting "eval "ls ."", it's transform it
+
+        # The "2>&1" is to redirect the stderr chanel, that contains the messages standar of error and it merges them with the stdout chanel that is the default chanel for standars outputs, and it whats it's append into the log file the tee -a comand.
+        if (eval "$command" 2>&1 | tee -a "$LOG_FILE";) then #it execute the command, and the if statement, it have in cont the $? value, if is 0(no errors) is true, if is other any value, is false.
+            exit_code_execution=$? #this variable is to in the future use, don't overwrite with the echo code execution of the echo_log_msg
+            echo_log_msg "✨ Command successfully completed ✨"
+        else
+            echo_log_msg "WARNING: Command completed with posible error code: $exit_code_execution"
+        fi
+    done
+}
+
+basic_update() {
+    name_pakage_manager=$1
+
+    case "$name_pakage_manager" in
+        "${list_package_manager_supported[0]}")
+            execute_commands "update_commands_apt" "Basic update (APT)"
+        ;;
+        "${list_package_manager_supported[1]}")
+            execute_commands "update_commands_dnf" "Basic update (DNF)"
+        ;;
+        "${list_package_manager_supported[2]}")
+            execute_commands "update_commands_pacman" "Basic update (Pacman)"
+        ;;
+        "${list_package_manager_supported[3]}")
+            execute_commands "update_commands_zypper" "Basic update (Zypper)"
+        ;;
+        "${list_package_manager_supported[4]}")
+            execute_commands "update_commands_xbps" "Basic update (XBPS)"
+        ;;
+    esac
+    echo_log_msg "Basic Update: done✨"
+}
+
+full_update() {
+    name_pakage_manager=$1
+
+    case "$name_pakage_manager" in
+        "${list_package_manager_supported[0]}")
+            execute_commands "full_update_commands_apt" "Full update (APT)"
+            #Second pass for possible new dependencies
+            echo_log_msg "--- Second full update pass ---"
+            execute_commands "full_update_commands_apt" "Full update - Second pass (APT)"
+        ;;
+        "${list_package_manager_supported[1]}")
+            execute_commands "full_update_commands_dnf" "Full update (DNF)"
+            echo_log_msg "--- Second full update pass ---"
+            execute_commands "full_update_commands_dnf" "Full update - Second pass (DNF)"
+        ;;
+        "${list_package_manager_supported[2]}")
+            execute_commands "full_update_commands_pacman" "Full update (Pacman)"
+            echo_log_msg "--- Second full update pass ---"
+            execute_commands "full_update_commands_pacman" "Full update - Second pass (Pacman)"
+        ;;
+        "${list_package_manager_supported[3]}")
+            execute_commands "full_update_commands_zypper" "Full update (Zypper)"
+            echo_log_msg "--- Second full update pass ---"
+            execute_commands "full_update_commands_zypper" "Full update - Second pass (Zypper)"
+        ;;
+        "${list_package_manager_supported[4]}")
+            execute_commands "full_update_commands_xbps" "Full update (XBPS)"
+            echo_log_msg "--- Second full update pass ---"
+            execute_commands "full_update_commands_xbps" "Full update - Second pass (XBPS)"
+        ;;
+    esac
+    echo_log_msg "Full update: done✨"
+}
+
+cleanup_system() {
+    name_pakage_manager=$1
+
+    case "$name_pakage_manager" in
+        "${list_package_manager_supported[0]}")
+            execute_commands "clean_commands_apt" "System cleanup (APT)"
+            #Second pass for possible residual waste
+            echo_log_msg "--- Second system cleanup pass ---"
+            execute_commands "clean_commands_apt" "System cleanup - Second pass (APT)"
+        ;;
+        "${list_package_manager_supported[1]}")
+            execute_commands "clean_commands_dnf" "System cleanup (DNF)"
+            echo_log_msg "--- Second system cleanup pass ---"
+            execute_commands "clean_commands_dnf" "System cleanup - Second pass (DNF)"
+        ;;
+        "${list_package_manager_supported[2]}")
+            execute_commands "clean_commands_pacman" "System cleanup (Pacman)"
+            echo_log_msg "--- Second system cleanup pass ---"
+            execute_commands "clean_commands_pacman" "System cleanup - Second pass (Pacman)"
+        ;;
+        "${list_package_manager_supported[3]}")
+            execute_commands "clean_commands_zypper" "System cleanup (Zypper)"
+            echo_log_msg "--- Second system cleanup pass ---"
+            execute_commands "clean_commands_zypper" "System cleanup - Second pass (Zypper)"
+        ;;
+        "${list_package_manager_supported[4]}")
+            execute_commands "clean_commands_xbps" "System cleanup (XBPS)"
+            echo_log_msg "--- Second system cleanup pass ---"
+            execute_commands "clean_commands_xbps" "System cleanup - Second pass (XBPS)"
+        ;;
+    esac
+    echo_log_msg "Cleanup system: done✨"
+}
+
+
+#==============================================================================
+# SNAPSHOT FUNCTION (call an external script)
+#==============================================================================
+
+create_snapshot() {
+    echo_log_msg "Verifying Timeshift availability..."
+
+    # Verify is the script snapshoft_timeshift file exist
+    if [ ! -f "$SNAPSHOT_TIMESHIFT_SCRIPT" ]; then
+        echo_log_msg "ERROR: Timeshift script not found: $TIMESHIFT_SCRIPT"
+
+        end_loop_first=1
+        #This loop is for repeat the question in the case that the user don't type 'Y' or 'y' or 'S' or 's' or 'N' or 'n'
+        while [ "$end_loop_first" -eq 1 ]
+        do
+            read -p "Continue without snapshot? (y/n): " -n 1 -r #The -n is for typing only one character and auto enter, the -p is for store the value of the read in "$REPLY", and -r is for not interpret the scape caracter
+            echo -e "\n${REPLY}"
+            if [[ "$REPLY" =~ ^[YySs]$ ]]; then #the "=~" is for compare the regular expresion
+                echo_log_msg "Continuing without snapshot.."
+                end_loop_first=0
+            elif [[ "$REPLY" =~ ^[Nn]$ ]]; then
+                echo_log_msg "Operation cancelled by user."
+                end_loop_first=0
+            else
+                echo -e "ERROR: Incorrect value\n"
+            fi
+        done
+    fi
+
+    # Check if the script of snapshot timeshit is executable or not
+    if [ ! -x "$SNAPSHOT_TIMESHIFT_SCRIPT" ]; then
+        echo_log_msg "Making Timeshift script executable.."
+        chmod +x "$SNAPSHOT_TIMESHIFT_SCRIPT"
+    fi
+
+    #Execute the external script for make timeshift snapshot
+    echo_log_msg "Executing external Timeshift script.."
+    bash "$SNAPSHOT_TIMESHIFT_SCRIPT"
+
+    snapshot_exit_code=$?
+
+    if [ "$snapshot_exit_code" -eq 0 ]; then
+        echo_log_msg "Restore point created successfully. :)"
+        return 0 #To end the execution of this function, 0 indicate 0 errors
+    else
+        echo_log_msg "WARNING: Problems creating snapshot (exit code: $snapshot_exit_code)"
+
+        end_loop_second=1
+        #This loop is for repeat the question in the case that the user don't type 'Y' or 'y' or 'S' or 's' or 'N' or 'n'
+        while [ "$end_loop_second" -eq 1 ]
+        do
+            read -p "Continue without snapshot? (y/n): " -n 1 -r #The -n is for typing only one character and auto enter, the -p is for store the value of the read in "$REPLY", and -r is for not interpret the scape caracter
+            echo -e "\n${REPLY}"
+            if [[ "$REPLY" =~ ^[YySs]$ ]]; then #the "=~" is for compare the regular expresion
+                echo_log_msg "Continuing without snapshot.."
+                end_loop_second=0
+            elif [[ "$REPLY" =~ ^[Nn]$ ]]; then
+                echo_log_msg "Operation cancelled by user."
+                exit 1 #exit the script
+            else
+                echo -e "ERROR: Incorrect value\n"
+            fi
+        done
+    fi
+    echo_log_msg "Create snapshot: done✨"
+}
+
+
+#==============================================================================
+# ARGUMENT PROCCESSING
+#==============================================================================
+#using "getopts"(an internal tool to process multiply arguments)
+parse_arguments() {
+    if [ $# -eq 0 ]; then #check if it has some argument
+        show_help
+        exit 0
+    fi
+
+    arguments_list=("$@") #transform the arguments into a iterable list
+    i=0 #index of the next while loop
+
+    # This is maked whit a while insted with a for loop, for the package-manager option, to be possible to obtain a parameter for that option
+    while [ "$i" -lt "${#arguments_list[@]}" ] #while i is lower than the length of the quantity of arguments of that list
+    do
+        argument="${arguments_list[$i]}"
+        if [ "${argument:0:2}" == "--" ]; then #cut the two firts characters of the argument to check if the two firts characters of the argument are -- or in the next elif if is one
+            clean_argument="${argument:2}" #cut the two firts characters ("--" in this case)
+            case "$clean_argument" in
+                help)
+                    show_help
+                    exit 0
+                    ;;
+                version)
+                    echo "Linux Distro Updater: v${VERSION}"
+                    exit 0
+                    ;;
+                list-managers)
+                    show_supported_package_managers
+                    exit 0
+                    ;;
+                install)
+                    INSTALL=true
+                    ;;
+                snapshot)
+                    DO_SNAPSHOT=true
+                    ;;
+                basic)
+                    DO_BASIC_UPDATE=true
+                    ;;
+                full)
+                    DO_FULL_UPDATE=true
+                    ;;
+                cleanup)
+                    DO_CLEANUP=true
+                    ;;
+                all)
+                    DO_SNAPSHOT=true
+                    DO_FULL_UPDATE=true
+                    DO_CLEANUP=true
+                    ;;
+                package-manager)
+                    (( i++ )) #Sum one to the index variable to skip the expected name_manager_package
+                    if [ "$i" -lt "${#arguments_list[@]}" ]; then #If the index value is lower than the total quality of arguments
+                        FORCE_PKG_MANAGER="${arguments_list[$i]}"
+                    else
+                        pre_formated_list_package_manager_supported="${list_package_manager_supported[@]}"
+                        formated_list_package_manager_supported="${pre_formated_list_package_manager_supported// /, }" #To format the list of list_package_manager_supported subtituting the spaces (" ") with comas and an space (", ")
+                        echo_log_msg "ERROR: --package-manager requires an argument (${formated_list_package_manager_supported})"
+                        exit 1
+                    fi
+                    ;;
+                *)
+                    echo_log_msg "ERROR: Unknown option: --$clean_argument"
+                    echo_log_msg "Use --help to see the available options"
+                    exit 1
+                ;;
+            esac
+
+        elif [ "${argument:0:1}" == "-" ]; then #cut the firts characters of the argument to check if the first characters of the argument is '-' or not
+            clean_argument="${argument:1}" #cut the firts character ('-' in this case)
+            length_simple_argument="${#clean_argument}"
+
+            #The next for is for the cases of the simple arguments compunds of more than one (example: -bs, basic update & snapshot)
+            for (( k=0; k<length_simple_argument; k++ )) # for iterate over the letters of the simple argument
+            do
+                actual_letter="${clean_argument:k:1}" #since postion k, obtain 1 caracter
+                case "$actual_letter" in
+                    h)
+                        show_help
+                        exit 0
+                        ;;
+                    v)
+                        echo "Linux Distro Updater: v${VERSION}"
+                        exit 0
+                        ;;
+                    l)
+                        show_supported_package_managers
+                        exit 0
+                        ;;
+                    i)
+                        INSTALL=true
+                        ;;
+                    s)
+                        DO_SNAPSHOT=true
+                        ;;
+                    b)
+                        DO_BASIC_UPDATE=true
+                        ;;
+                    f)
+                        DO_FULL_UPDATE=true
+                        ;;
+                    c)
+                        DO_CLEANUP=true
+                        ;;
+                    a)
+                        DO_SNAPSHOT=true
+                        DO_FULL_UPDATE=true
+                        DO_CLEANUP=true
+                        ;;
+                    p)
+                        (( i++ )) #Sum one to the index variable to skip the expected name_manager_package
+                        if [ "$i" -lt "${#arguments_list[@]}" ]; then #If the index value is lower than the total quality of arguments
+                            FORCE_PKG_MANAGER="${arguments_list[$i]}"
+                        else
+                            pre_formated_list_package_manager_supported="${list_package_manager_supported[@]}"
+                            formated_list_package_manager_supported="${pre_formated_list_package_manager_supported// /, }" #To format the list of list_package_manager_supported subtituting the spaces (" ") with comas and an space (", ")
+                            echo_log_msg "ERROR: --package-manager requires an argument (${formated_list_package_manager_supported})"
+                            exit 1
+                        fi
+                        ;;
+                    *)
+                        echo_log_msg "ERROR: Unknown option: -$actual_letter"
+                        echo_log_msg "Use -h or --help to see the available options"
+                        exit 1
+                        ;;
+                esac
+            done
+        else
+            #If don't start with '-' or "--" is an invalid argument
+            echo_log_msg "ERROR: Invalid argument: $argument"
+            show_help
+            exit 1
+        fi
+
+        (( i++ )) #Goes to next argument
+    done
+
+    # Possible future implementation, add an --only-snapshot, in the case that only whant to snapshot, for now only puting "-s" or "--snapshot"
+}
+
+main() {
+    # Check if it parse arguments or not
+    parse_arguments "$@"
+    
+    # Verify that is executing by a user with root/ sudo privileges
+    check_root
+
+    # Rotate log if is necesari, check abd rotateit if is necesari the log archive
+    rotate_log
+
+    # Welcome message
+    echo_log_msg "======================================================="
+    echo_log_msg "   Welcom to the \033[1mLinux Distro Updater\033[0m v${VERSION}, enjoy!" # The "\033[1m" and "\033[0m" are escape characters to activate and deactivate the bold text
+    echo_log_msg "======================================================="
+
+    # Detect the package manager
+    PKG_MANAGER=$(detect_main_package_manager)
+
+    if [ "$INSTALL" = true ]; then
+        install_linuxDistroUpdater
+    fi
+    # Execute snapshot if it requested
+    if [ "$DO_SNAPSHOT" = true ]; then
+        create_snapshot
+    fi
+
+    if [ "$DO_BASIC_UPDATE" = true ]; then
+        basic_update
+    fi
+
+    if [ "$DO_FULL_UPDATE" = true ]; then
+        full_update
+    fi
+
+    if [ "$DO_CLEANUP" = true ]; then
+        cleanup_system
+    fi
+
+    echo_log_msg "======================================================="
+    echo_log_msg "✨ Process completed successfully ✨"
+    echo_log_msg "======================================================="
+}
+main "$@"
+
+#Author: Penguin1866s(https://github.com/Penguin1866s)

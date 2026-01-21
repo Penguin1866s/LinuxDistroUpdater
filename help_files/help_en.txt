@@ -1,0 +1,29 @@
+Universal Linux Distribution Updater v${VERSION}
+
+USAGE:
+    sudo ./${SCRIPT_NAME} [OPTIONS]
+
+OPTIONS:
+    -h, --help              Show this help message.
+    -v, --version           Show version.
+    -l, --list-managers     Show supported package managers.
+    -i, --install           Install LinuxDistroUpdater locally and enable args autocompletion.
+    -s, --snapshot          Create restore point before update (requires Timeshift).
+    -b, --basic             Basic update (update + upgrade).
+    -f, --full              Full update (update + full-upgrade + repeat).
+    -c, --cleanup           Remove unnecessary packages.
+    -a, --all               Run all: snapshot + full update + cleanup.
+    -p, --package-manager   Force specific manager (apt, dnf, pacman, zypper, xbps).
+
+EXAMPLES:
+    # Full update with everything
+    sudo ./${SCRIPT_NAME} --all
+
+    # Force the use of the package manager "apt" for a full update
+    sudo ./${SCRIPT_NAME} --package-manager apt
+
+NOTES:
+    - The script automatically detects the package manager
+    - Logs are saved at: ${LOG_FILE}
+    - The option of --snapshot use Timeshift
+
